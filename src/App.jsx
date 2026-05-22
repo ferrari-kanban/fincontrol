@@ -10,23 +10,7 @@ import {
   PieChart, Pie, Cell, BarChart, Bar, LineChart, Line, XAxis, YAxis,
   CartesianGrid, Tooltip, Legend, ResponsiveContainer, AreaChart, Area
 } from 'recharts';
-// Adapta storage do Claude para localStorage do navegador
-if (typeof window !== 'undefined' && !window.storage) {
-  window.storage = {
-    get: async (key) => {
-      const v = localStorage.getItem(key);
-      return v ? { value: v } : null;
-    },
-    set: async (key, value) => {
-      localStorage.setItem(key, value);
-      return { key, value };
-    },
-    delete: async (key) => {
-      localStorage.removeItem(key);
-      return { key, deleted: true };
-    }
-  };
-}
+import { supabase } from './supabase'
 // =====================================================================
 // CONFIGURAÇÃO - Em produção, mover para variáveis de ambiente
 // =====================================================================
@@ -254,97 +238,205 @@ function formatarData(dataStr) {
 }
 
 // =====================================================================
-// CAMADA DE DADOS - Abstração que funciona com storage local OU Supabase
-// Quando você plugar suas credenciais Supabase em APP_CONFIG, automaticamente
-// passa a salvar no banco real. Estrutura idêntica.
+// CAMADA DE DADOS - Supabase
 // =====================================================================
 const dataLayer = {
   async carregar(usuarioId) {
-    // Quando Supabase estiver configurado, fazer fetch real aqui
-    try {
-      const t = await window.storage.get(`${usuarioId}_transacoes`).catch(() => null);
-      const c = await window.storage.get(`${usuarioId}_contas`).catch(() => null);
-      const m = await window.storage.get(`${usuarioId}_metas`).catch(() => null);
-      const r = await window.storage.get(`${usuarioId}_regras`).catch(() => null);
-      
-      return {
-        transacoes: t ? JSON.parse(t.value) : [],
-        contas: c ? JSON.parse(c.value) : [
-          { id: 'conta1', nome: 'Conta Corrente', tipo: 'conta', saldoInicial: 0, cor: '#3b82f6' },
-          { id: 'cartao1', nome: 'Cartão de Crédito', tipo: 'cartao', limite: 5000, cor: '#ef4444' }
-        ],
-        metas: m ? JSON.parse(m.value) : {},
-        regras: r ? JSON.parse(r.value) : {}
-      };
-    } catch {
-      return { transacoes: [], contas: [], metas: {}, regras: {} };
+    const [transacoesRes, contasRes, metasRes, regrasRes] = await Promise.all([
+      supabase.from('transacoes').select('*').eq('user_id', usuarioId).order('data', { ascending: false }),
+      supabase.from('contas').select('*').eq('user_id', usuarioId),
+      supabase.from('metas').select('*').eq('user_id', usuarioId),
+      supabase.from('regras_categorizacao').select('*').eq('user_id', usuarioId)
+    ]);
+    
+    let contas = contasRes.data || [];
+    if (contas.length === 0) {
+      const contasPadrao = [
+        { user_id: usuarioId, nome: 'Conta Corrente', tipo: 'conta', saldo_inicial: 0, cor: '#3b82f6' },
+        { user_id: usuarioId, nome: 'Cartão de Crédito', tipo: 'cartao', limite: 5000, cor: '#ef4444' }
+      ];
+      const { data } = await supabase.from('contas').insert(contasPadrao).select();
+      contas = data || [];
     }
+    
+    const transacoes = (transacoesRes.data || []).map(t => ({
+      id: t.id,
+      data: t.data,
+      descricao: t.descricao,
+      valor: parseFloat(t.valor),
+      tipo: t.tipo,
+      categoria: t.categoria,
+      conta: t.conta_id
+    }));
+    
+    const contasAdaptadas = contas.map(c => ({
+      id: c.id,
+      nome: c.nome,
+      tipo: c.tipo,
+      saldoInicial: parseFloat(c.saldo_inicial || 0),
+      limite: parseFloat(c.limite || 0),
+      cor: c.cor
+    }));
+    
+    const metas = {};
+    (metasRes.data || []).forEach(m => {
+      metas[m.categoria] = parseFloat(m.valor);
+    });
+    
+    const regras = {};
+    (regrasRes.data || []).forEach(r => {
+      regras[r.palavra] = r.categoria;
+    });
+    
+    return { transacoes, contas: contasAdaptadas, metas, regras };
   },
   
   async salvar(usuarioId, tipo, dados) {
     try {
-      await window.storage.set(`${usuarioId}_${tipo}`, JSON.stringify(dados));
+      if (tipo === 'transacoes') {
+        await supabase.from('transacoes').delete().eq('user_id', usuarioId);
+        if (dados.length > 0) {
+          const paraInserir = dados.map(t => ({
+            id: t.id,
+            user_id: usuarioId,
+            data: t.data,
+            descricao: t.descricao,
+            valor: t.valor,
+            tipo: t.tipo,
+            categoria: t.categoria,
+            conta_id: t.conta && t.conta !== 'importado' ? t.conta : null
+          }));
+          await supabase.from('transacoes').insert(paraInserir);
+        }
+      } else if (tipo === 'contas') {
+        await supabase.from('contas').delete().eq('user_id', usuarioId);
+        if (dados.length > 0) {
+          const paraInserir = dados.map(c => ({
+            id: c.id,
+            user_id: usuarioId,
+            nome: c.nome,
+            tipo: c.tipo,
+            saldo_inicial: c.saldoInicial || 0,
+            limite: c.limite || 0,
+            cor: c.cor
+          }));
+          await supabase.from('contas').insert(paraInserir);
+        }
+      } else if (tipo === 'metas') {
+        await supabase.from('metas').delete().eq('user_id', usuarioId);
+        const entradas = Object.entries(dados);
+        if (entradas.length > 0) {
+          const paraInserir = entradas.map(([categoria, valor]) => ({
+            user_id: usuarioId,
+            categoria,
+            valor
+          }));
+          await supabase.from('metas').insert(paraInserir);
+        }
+      } else if (tipo === 'regras') {
+        await supabase.from('regras_categorizacao').delete().eq('user_id', usuarioId);
+        const entradas = Object.entries(dados);
+        if (entradas.length > 0) {
+          const paraInserir = entradas.map(([palavra, categoria]) => ({
+            user_id: usuarioId,
+            palavra,
+            categoria
+          }));
+          await supabase.from('regras_categorizacao').insert(paraInserir);
+        }
+      }
     } catch (e) {
-      console.error('Erro ao salvar', e);
+      console.error('Erro ao salvar:', e);
     }
   }
 };
-
 // =====================================================================
-// CAMADA DE AUTENTICAÇÃO - Funciona localmente, pronta para Supabase Auth
+// CAMADA DE AUTENTICAÇÃO - Supabase
 // =====================================================================
 const authLayer = {
   async cadastrar(email, senha, nome) {
-    // Em produção: supabase.auth.signUp({ email, password })
-    const usuarios = JSON.parse((await window.storage.get('app_usuarios').catch(() => null))?.value || '{}');
-    if (usuarios[email]) throw new Error('Este e-mail já está cadastrado');
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password: senha,
+      options: {
+        data: { nome }
+      }
+    });
     
-    const usuario = {
-      id: `u_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
-      email, nome, plano: 'free',
-      criadoEm: new Date().toISOString()
+    if (error) {
+      if (error.message.includes('already registered') || error.message.includes('already been registered') || error.message.includes('User already registered')) {
+        throw new Error('Este e-mail já está cadastrado. Faça login.');
+      }
+      throw new Error(error.message);
+    }
+    
+    return {
+      id: data.user.id,
+      email: data.user.email,
+      nome,
+      plano: 'free'
     };
-    usuarios[email] = { ...usuario, senha: btoa(senha) }; // hash básico só pra demo
-    await window.storage.set('app_usuarios', JSON.stringify(usuarios));
-    await window.storage.set('app_sessao', JSON.stringify({ email, id: usuario.id }));
-    return usuario;
   },
   
   async login(email, senha) {
-    const usuarios = JSON.parse((await window.storage.get('app_usuarios').catch(() => null))?.value || '{}');
-    const u = usuarios[email];
-    if (!u || u.senha !== btoa(senha)) throw new Error('E-mail ou senha incorretos');
-    await window.storage.set('app_sessao', JSON.stringify({ email, id: u.id }));
-    const { senha: _, ...usuarioSemSenha } = u;
-    return usuarioSemSenha;
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email,
+      password: senha
+    });
+    
+    if (error) {
+      if (error.message.includes('Invalid login credentials')) {
+        throw new Error('E-mail ou senha incorretos');
+      }
+      throw new Error(error.message);
+    }
+    
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', data.user.id)
+      .single();
+    
+    return {
+      id: data.user.id,
+      email: data.user.email,
+      nome: profile?.nome || data.user.email,
+      plano: profile?.plano || 'free'
+    };
   },
   
   async sessao() {
-    try {
-      const s = await window.storage.get('app_sessao').catch(() => null);
-      if (!s) return null;
-      const sessao = JSON.parse(s.value);
-      const usuarios = JSON.parse((await window.storage.get('app_usuarios').catch(() => null))?.value || '{}');
-      const u = usuarios[sessao.email];
-      if (!u) return null;
-      const { senha: _, ...usuario } = u;
-      return usuario;
-    } catch { return null; }
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) return null;
+    
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', session.user.id)
+      .single();
+    
+    return {
+      id: session.user.id,
+      email: session.user.email,
+      nome: profile?.nome || session.user.email,
+      plano: profile?.plano || 'free'
+    };
   },
   
   async sair() {
-    await window.storage.delete('app_sessao').catch(() => {});
+    await supabase.auth.signOut();
   },
   
   async atualizarPlano(email, plano) {
-    const usuarios = JSON.parse((await window.storage.get('app_usuarios').catch(() => null))?.value || '{}');
-    if (usuarios[email]) {
-      usuarios[email].plano = plano;
-      await window.storage.set('app_usuarios', JSON.stringify(usuarios));
-    }
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+    
+    await supabase
+      .from('profiles')
+      .update({ plano })
+      .eq('id', user.id);
   }
 };
-
 // =====================================================================
 // COMPONENTE RAIZ
 // =====================================================================
