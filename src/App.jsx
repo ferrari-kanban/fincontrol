@@ -1368,7 +1368,7 @@ function AbaMinhaConta({ usuario, dados, onAtualizarUsuario, onSair, salvar }) {
   }
 
   // Excluir conta (apaga TUDO)
-  async function excluirConta() {
+async function excluirConta() {
     setSalvando(true);
     try {
       // Apaga dados das tabelas (RLS já garante que só apaga os do usuário)
@@ -1377,6 +1377,13 @@ function AbaMinhaConta({ usuario, dados, onAtualizarUsuario, onSair, salvar }) {
       await supabase.from('metas').delete().eq('user_id', usuario.id);
       await supabase.from('regras_categorizacao').delete().eq('user_id', usuario.id);
       await supabase.from('profiles').delete().eq('id', usuario.id);
+      
+      // Apaga a conta de autenticação (auth.users) via função do banco
+      const { error: errorDelete } = await supabase.rpc('deletar_minha_conta');
+      if (errorDelete) {
+        console.error('Erro ao deletar auth:', errorDelete);
+        // Continua mesmo com erro - os dados já foram apagados
+      }
       
       // Faz logout
       await supabase.auth.signOut();
