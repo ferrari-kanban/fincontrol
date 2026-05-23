@@ -4,7 +4,7 @@ import {
   FileText, Download, Trash2, Edit2, AlertCircle, CheckCircle2, DollarSign,
   PieChart as PieChartIcon, BarChart3, Settings, X, Search, LogOut, Crown,
   Sparkles, Mail, Lock, User, Eye, EyeOff, Loader2, Calendar, ArrowRight,
-  Shield, Zap, Building2, FileBarChart, Bell, ChevronRight
+  Shield, Zap, Building2, FileBarChart, Bell, ChevronRight, ChevronDown, Moon, Sun
 } from 'lucide-react';
 import {
   PieChart, Pie, Cell, BarChart, Bar, LineChart, Line, XAxis, YAxis,
@@ -1076,13 +1076,11 @@ function OrganizadorFinanceiro({ usuario, onSair, onAtualizarUsuario }) {
               <Plus className="w-4 h-4" />
               <span className="hidden sm:inline">Nova</span>
             </button>
-            <button
-              onClick={onSair}
-              className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-50 rounded-lg"
-              title="Sair"
-            >
-              <LogOut className="w-4 h-4" />
-            </button>
+            <AvatarDropdown 
+  usuario={usuario} 
+  onSair={onSair}
+  onAbrirConfig={() => setAbaAtiva('conta')}
+/>
           </div>
         </div>
       </header>
@@ -1170,6 +1168,15 @@ function OrganizadorFinanceiro({ usuario, onSair, onAtualizarUsuario }) {
             onExcluir={excluirConta}
           />
         )}
+        {abaAtiva === 'conta' && (
+          <AbaMinhaConta
+            usuario={usuario}
+            dados={dados}
+            onAtualizarUsuario={onAtualizarUsuario}
+            onSair={onSair}
+            salvar={salvar}
+          />
+        )}
       </main>
 
       {modalTransacao && (
@@ -1221,7 +1228,572 @@ function OrganizadorFinanceiro({ usuario, onSair, onAtualizarUsuario }) {
     </div>
   );
 }
+// =====================================================================
+// MINHA CONTA - Tela completa de configurações do usuário
+// =====================================================================
+function AbaMinhaConta({ usuario, dados, onAtualizarUsuario, onSair, salvar }) {
+  const [secao, setSecao] = useState('perfil');
+  const [salvando, setSalvando] = useState(false);
+  const [mensagem, setMensagem] = useState(null);
+  
+  // Estados dos formulários
+  const [nome, setNome] = useState(usuario.nome || '');
+  const [novoEmail, setNovoEmail] = useState(usuario.email || '');
+  const [senhaAtual, setSenhaAtual] = useState('');
+  const [novaSenha, setNovaSenha] = useState('');
+  const [confirmarSenha, setConfirmarSenha] = useState('');
+  const [tema, setTema] = useState('claro');
+  const [modalExcluir, setModalExcluir] = useState(false);
 
+  // Helper para mostrar mensagens temporárias
+  function mostrarMensagem(texto, tipo = 'sucesso') {
+    setMensagem({ texto, tipo });
+    setTimeout(() => setMensagem(null), 4000);
+  }
+
+  // Salvar nome
+  async function salvarNome() {
+    if (!nome.trim()) {
+      mostrarMensagem('Nome não pode ficar vazio', 'erro');
+      return;
+    }
+    setSalvando(true);
+    try {
+      const { error } = await supabase
+        .from('profiles')
+        .update({ nome: nome.trim() })
+        .eq('id', usuario.id);
+      
+      if (error) throw error;
+      
+      onAtualizarUsuario({ ...usuario, nome: nome.trim() });
+      mostrarMensagem('Nome atualizado com sucesso! ✅');
+    } catch (e) {
+      mostrarMensagem('Erro ao atualizar nome: ' + e.message, 'erro');
+    }
+    setSalvando(false);
+  }
+
+  // Alterar e-mail
+  async function alterarEmail() {
+    if (!novoEmail.trim() || !novoEmail.includes('@')) {
+      mostrarMensagem('E-mail inválido', 'erro');
+      return;
+    }
+    if (novoEmail.toLowerCase().trim() === usuario.email.toLowerCase()) {
+      mostrarMensagem('Este já é o seu e-mail atual', 'erro');
+      return;
+    }
+    setSalvando(true);
+    try {
+      const { error } = await supabase.auth.updateUser({
+        email: novoEmail.toLowerCase().trim()
+      });
+      
+      if (error) throw error;
+      
+      mostrarMensagem('📧 Verifique seu novo e-mail para confirmar a alteração');
+    } catch (e) {
+      mostrarMensagem('Erro: ' + e.message, 'erro');
+    }
+    setSalvando(false);
+  }
+
+  // Alterar senha
+  async function alterarSenha() {
+    if (novaSenha.length < 6) {
+      mostrarMensagem('Nova senha deve ter no mínimo 6 caracteres', 'erro');
+      return;
+    }
+    if (novaSenha !== confirmarSenha) {
+      mostrarMensagem('Confirmação de senha não confere', 'erro');
+      return;
+    }
+    setSalvando(true);
+    try {
+      const { error } = await supabase.auth.updateUser({
+        password: novaSenha
+      });
+      
+      if (error) throw error;
+      
+      setSenhaAtual('');
+      setNovaSenha('');
+      setConfirmarSenha('');
+      mostrarMensagem('Senha alterada com sucesso! ✅');
+    } catch (e) {
+      mostrarMensagem('Erro ao alterar senha: ' + e.message, 'erro');
+    }
+    setSalvando(false);
+  }
+
+  // Salvar tema
+  async function salvarTema(novoTema) {
+    setTema(novoTema);
+    try {
+      await supabase
+        .from('profiles')
+        .update({ tema: novoTema })
+        .eq('id', usuario.id);
+      mostrarMensagem(`Tema alterado para ${novoTema} 🎨`);
+    } catch (e) {
+      mostrarMensagem('Erro ao salvar tema', 'erro');
+    }
+  }
+
+  // Exportar todos os dados (LGPD)
+  function exportarDados() {
+    const exportacao = {
+      data_exportacao: new Date().toISOString(),
+      usuario: {
+        nome: usuario.nome,
+        email: usuario.email,
+        plano: usuario.plano
+      },
+      transacoes: dados.transacoes,
+      contas: dados.contas,
+      metas: dados.metas,
+      regras_categorizacao: dados.regras
+    };
+    
+    const json = JSON.stringify(exportacao, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `fincontrol_dados_${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    mostrarMensagem('Dados exportados com sucesso! 📥');
+  }
+
+  // Excluir conta (apaga TUDO)
+  async function excluirConta() {
+    setSalvando(true);
+    try {
+      // Apaga dados das tabelas (RLS já garante que só apaga os do usuário)
+      await supabase.from('transacoes').delete().eq('user_id', usuario.id);
+      await supabase.from('contas').delete().eq('user_id', usuario.id);
+      await supabase.from('metas').delete().eq('user_id', usuario.id);
+      await supabase.from('regras_categorizacao').delete().eq('user_id', usuario.id);
+      await supabase.from('profiles').delete().eq('id', usuario.id);
+      
+      // Faz logout
+      await supabase.auth.signOut();
+      
+      alert('Sua conta foi excluída com sucesso. Sentiremos sua falta!');
+      onSair();
+    } catch (e) {
+      mostrarMensagem('Erro ao excluir conta: ' + e.message, 'erro');
+      setSalvando(false);
+    }
+  }
+
+  const secoes = [
+    { id: 'perfil', label: 'Perfil', icone: User },
+    { id: 'seguranca', label: 'Segurança', icone: Lock },
+    { id: 'preferencias', label: 'Preferências', icone: Settings },
+    { id: 'plano', label: 'Plano e Assinatura', icone: Crown },
+    { id: 'dados', label: 'Meus Dados', icone: Shield },
+    { id: 'perigo', label: 'Zona de Perigo', icone: AlertCircle }
+  ];
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold text-slate-900">Minha Conta</h1>
+        <p className="text-sm text-slate-500 mt-1">Gerencie suas informações e preferências</p>
+      </div>
+
+      {/* Mensagem de feedback */}
+      {mensagem && (
+        <div className={`p-3 rounded-lg text-sm flex items-center gap-2 ${
+          mensagem.tipo === 'erro' 
+            ? 'bg-rose-50 text-rose-700 border border-rose-200' 
+            : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+        }`}>
+          {mensagem.tipo === 'erro' ? <AlertCircle className="w-4 h-4" /> : <CheckCircle2 className="w-4 h-4" />}
+          {mensagem.texto}
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+        {/* Menu lateral */}
+        <nav className="md:col-span-1">
+          <div className="bg-white rounded-2xl border border-slate-200 p-2">
+            {secoes.map(s => {
+              const Icone = s.icone;
+              const ativo = secao === s.id;
+              return (
+                <button
+                  key={s.id}
+                  onClick={() => setSecao(s.id)}
+                  className={`w-full text-left px-3 py-2.5 rounded-lg text-sm font-medium flex items-center gap-2 transition ${
+                    ativo 
+                      ? 'bg-indigo-50 text-indigo-700' 
+                      : 'text-slate-600 hover:bg-slate-50'
+                  } ${s.id === 'perigo' && !ativo ? 'text-rose-600 hover:bg-rose-50' : ''}`}
+                >
+                  <Icone className="w-4 h-4" />
+                  {s.label}
+                </button>
+              );
+            })}
+          </div>
+        </nav>
+
+        {/* Conteúdo */}
+        <div className="md:col-span-3">
+          <div className="bg-white rounded-2xl border border-slate-200 p-6">
+            
+            {/* SEÇÃO: PERFIL */}
+            {secao === 'perfil' && (
+              <div className="space-y-5">
+                <h2 className="font-semibold text-slate-900">Informações pessoais</h2>
+                
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1.5">NOME</label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={nome}
+                      onChange={e => setNome(e.target.value)}
+                      className="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 outline-none"
+                    />
+                    <button
+                      onClick={salvarNome}
+                      disabled={salvando || nome === usuario.nome}
+                      className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {salvando ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Salvar'}
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1.5">E-MAIL</label>
+                  <div className="flex gap-2">
+                    <input
+                      type="email"
+                      value={novoEmail}
+                      onChange={e => setNovoEmail(e.target.value)}
+                      className="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 outline-none"
+                    />
+                    <button
+                      onClick={alterarEmail}
+                      disabled={salvando || novoEmail === usuario.email}
+                      className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {salvando ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Alterar'}
+                    </button>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-1.5">Você precisará confirmar o novo e-mail antes da alteração ter efeito.</p>
+                </div>
+              </div>
+            )}
+
+            {/* SEÇÃO: SEGURANÇA */}
+            {secao === 'seguranca' && (
+              <div className="space-y-5">
+                <h2 className="font-semibold text-slate-900">Alterar senha</h2>
+                
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1.5">NOVA SENHA</label>
+                  <input
+                    type="password"
+                    value={novaSenha}
+                    onChange={e => setNovaSenha(e.target.value)}
+                    placeholder="Mínimo 6 caracteres"
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1.5">CONFIRMAR NOVA SENHA</label>
+                  <input
+                    type="password"
+                    value={confirmarSenha}
+                    onChange={e => setConfirmarSenha(e.target.value)}
+                    placeholder="Digite a senha de novo"
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 outline-none"
+                  />
+                </div>
+
+                <button
+                  onClick={alterarSenha}
+                  disabled={salvando || !novaSenha || !confirmarSenha}
+                  className="w-full py-2.5 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:opacity-50"
+                >
+                  {salvando ? <Loader2 className="w-4 h-4 animate-spin inline" /> : 'Alterar senha'}
+                </button>
+              </div>
+            )}
+
+            {/* SEÇÃO: PREFERÊNCIAS */}
+            {secao === 'preferencias' && (
+              <div className="space-y-5">
+                <h2 className="font-semibold text-slate-900">Aparência</h2>
+                
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-2">TEMA</label>
+                  <div className="grid grid-cols-2 gap-3">
+                    <button
+                      onClick={() => salvarTema('claro')}
+                      className={`p-4 border-2 rounded-xl transition ${
+                        tema === 'claro' 
+                          ? 'border-indigo-500 bg-indigo-50' 
+                          : 'border-slate-200 hover:border-slate-300'
+                      }`}
+                    >
+                      <Sun className="w-6 h-6 mx-auto mb-2 text-amber-500" />
+                      <p className="text-sm font-medium text-slate-900">Claro</p>
+                    </button>
+                    <button
+                      onClick={() => salvarTema('escuro')}
+                      className={`p-4 border-2 rounded-xl transition ${
+                        tema === 'escuro' 
+                          ? 'border-indigo-500 bg-indigo-50' 
+                          : 'border-slate-200 hover:border-slate-300'
+                      }`}
+                    >
+                      <Moon className="w-6 h-6 mx-auto mb-2 text-indigo-500" />
+                      <p className="text-sm font-medium text-slate-900">Escuro</p>
+                    </button>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-2">⚠️ Tema escuro virá em uma próxima atualização. Sua preferência fica salva.</p>
+                </div>
+              </div>
+            )}
+
+            {/* SEÇÃO: PLANO */}
+            {secao === 'plano' && (
+              <div className="space-y-5">
+                <h2 className="font-semibold text-slate-900">Seu plano atual</h2>
+                
+                {usuario.plano === 'premium' ? (
+                  <div className="bg-gradient-to-br from-amber-50 to-orange-50 border-2 border-amber-200 rounded-xl p-5">
+                    <div className="flex items-center gap-2 mb-2">
+                      <Crown className="w-5 h-5 text-amber-600" />
+                      <h3 className="font-bold text-amber-900">Plano Premium</h3>
+                    </div>
+                    <p className="text-sm text-amber-800 mb-4">Você tem acesso a todas as funcionalidades sem limites.</p>
+                    <ul className="space-y-1.5 text-sm text-amber-900">
+                      <li className="flex items-center gap-2"><CheckCircle2 className="w-4 h-4" /> Transações ilimitadas</li>
+                      <li className="flex items-center gap-2"><CheckCircle2 className="w-4 h-4" /> Importações ilimitadas de PDF</li>
+                      <li className="flex items-center gap-2"><CheckCircle2 className="w-4 h-4" /> Contas e cartões ilimitados</li>
+                      <li className="flex items-center gap-2"><CheckCircle2 className="w-4 h-4" /> Relatórios em PDF</li>
+                    </ul>
+                  </div>
+                ) : (
+                  <>
+                    <div className="bg-slate-50 border border-slate-200 rounded-xl p-5">
+                      <h3 className="font-bold text-slate-900">Plano Gratuito</h3>
+                      <p className="text-sm text-slate-600 mt-1">Bom pra começar, com algumas limitações.</p>
+                      <ul className="mt-3 space-y-1.5 text-sm text-slate-700">
+                        <li>• 50 transações por mês</li>
+                        <li>• 1 importação de PDF</li>
+                        <li>• 2 contas/cartões</li>
+                      </ul>
+                    </div>
+
+                    <div className="bg-gradient-to-br from-indigo-600 to-purple-600 text-white rounded-xl p-5">
+                      <div className="flex items-center gap-2 mb-1">
+                        <Crown className="w-5 h-5 text-amber-300" />
+                        <h3 className="font-bold">Upgrade para Premium</h3>
+                      </div>
+                      <p className="text-3xl font-bold mt-2">R$ 19,90<span className="text-sm font-normal opacity-80">/mês</span></p>
+                      <p className="text-sm opacity-90 mt-1 mb-4">Tudo ilimitado, sem complicação.</p>
+                      <button
+                        disabled
+                        className="w-full py-2.5 bg-white/20 text-white rounded-lg text-sm font-semibold cursor-not-allowed"
+                      >
+                        Em breve (pagamento em desenvolvimento)
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* SEÇÃO: DADOS */}
+            {secao === 'dados' && (
+              <div className="space-y-5">
+                <h2 className="font-semibold text-slate-900">Seus dados</h2>
+                <p className="text-sm text-slate-600">
+                  Você tem direito de baixar uma cópia de todos os seus dados a qualquer momento (LGPD).
+                </p>
+                
+                <div className="border border-slate-200 rounded-xl p-5">
+                  <div className="flex items-start gap-3 mb-4">
+                    <Download className="w-5 h-5 text-indigo-600 flex-shrink-0 mt-0.5" />
+                    <div>
+                      <h3 className="font-semibold text-slate-900">Exportar todos os dados</h3>
+                      <p className="text-sm text-slate-600 mt-1">
+                        Baixa um arquivo JSON com todas suas transações, contas, metas e configurações.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={exportarDados}
+                    className="w-full py-2.5 border border-indigo-200 bg-indigo-50 text-indigo-700 rounded-lg text-sm font-medium hover:bg-indigo-100"
+                  >
+                    Baixar meus dados (JSON)
+                  </button>
+                </div>
+
+                <div className="bg-slate-50 rounded-xl p-4 text-xs text-slate-600">
+                  <p className="flex items-start gap-2">
+                    <Shield className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                    <span>
+                      Seus dados são criptografados e armazenados em servidores seguros. 
+                      Não compartilhamos com terceiros. Apenas você tem acesso.
+                    </span>
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* SEÇÃO: ZONA DE PERIGO */}
+            {secao === 'perigo' && (
+              <div className="space-y-5">
+                <h2 className="font-semibold text-rose-700">Zona de Perigo</h2>
+                <p className="text-sm text-slate-600">
+                  Ações irreversíveis. Pense bem antes de prosseguir.
+                </p>
+                
+                <div className="border-2 border-rose-200 bg-rose-50 rounded-xl p-5">
+                  <div className="flex items-start gap-3 mb-4">
+                    <Trash2 className="w-5 h-5 text-rose-600 flex-shrink-0 mt-0.5" />
+                    <div>
+                      <h3 className="font-semibold text-rose-900">Excluir minha conta</h3>
+                      <p className="text-sm text-rose-700 mt-1">
+                        Apaga permanentemente sua conta, todas as suas transações, contas, metas e configurações. 
+                        Esta ação não pode ser desfeita.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setModalExcluir(true)}
+                    className="w-full py-2.5 bg-rose-600 text-white rounded-lg text-sm font-semibold hover:bg-rose-700"
+                  >
+                    Excluir minha conta permanentemente
+                  </button>
+                </div>
+              </div>
+            )}
+
+          </div>
+        </div>
+      </div>
+
+      {/* Modal de confirmação de exclusão */}
+      {modalExcluir && (
+        <ModalBase titulo="⚠️ Tem certeza absoluta?" onFechar={() => setModalExcluir(false)}>
+          <div className="space-y-4">
+            <div className="bg-rose-50 border border-rose-200 rounded-lg p-4 text-sm text-rose-800">
+              <p className="font-semibold mb-2">Esta ação é IRREVERSÍVEL.</p>
+              <p>Você vai perder:</p>
+              <ul className="mt-2 ml-4 space-y-1">
+                <li>• Todas as suas {dados.transacoes.length} transações</li>
+                <li>• Todas as suas {dados.contas.length} contas</li>
+                <li>• Todas as suas metas e configurações</li>
+                <li>• Acesso à sua conta para sempre</li>
+              </ul>
+            </div>
+            <p className="text-sm text-slate-700">
+              Recomendamos <strong>exportar seus dados antes</strong> em "Meus Dados".
+            </p>
+            <div className="flex gap-2 pt-2">
+              <button
+                onClick={() => setModalExcluir(false)}
+                className="flex-1 py-2.5 border border-slate-200 rounded-lg font-medium text-sm text-slate-700 hover:bg-slate-50"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={excluirConta}
+                disabled={salvando}
+                className="flex-1 py-2.5 bg-rose-600 text-white rounded-lg font-medium text-sm hover:bg-rose-700 disabled:opacity-50"
+              >
+                {salvando ? <Loader2 className="w-4 h-4 animate-spin inline" /> : 'Sim, excluir tudo'}
+              </button>
+            </div>
+          </div>
+        </ModalBase>
+      )}
+    </div>
+  );
+}
+// =====================================================================
+// AVATAR COM DROPDOWN (menu de usuário no header)
+// =====================================================================
+function AvatarDropdown({ usuario, onSair, onAbrirConfig }) {
+  const [aberto, setAberto] = useState(false);
+  const ref = useRef();
+
+  // Fecha ao clicar fora do menu
+  useEffect(() => {
+    function handleClick(e) {
+      if (ref.current && !ref.current.contains(e.target)) {
+        setAberto(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, []);
+
+  // Gera iniciais a partir do nome ou e-mail
+  const iniciais = (usuario.nome || usuario.email || 'U')
+    .split(' ')
+    .map(p => p[0])
+    .slice(0, 2)
+    .join('')
+    .toUpperCase();
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setAberto(!aberto)}
+        className="flex items-center gap-2 p-1 pr-2 rounded-full hover:bg-slate-100 transition"
+      >
+        <div className="w-8 h-8 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white text-xs font-bold">
+          {iniciais}
+        </div>
+        <ChevronDown className={`w-4 h-4 text-slate-400 transition ${aberto ? 'rotate-180' : ''}`} />
+      </button>
+
+      {aberto && (
+        <div className="absolute right-0 mt-2 w-64 bg-white border border-slate-200 rounded-xl shadow-lg overflow-hidden z-50">
+          <div className="p-4 border-b border-slate-100">
+            <p className="font-semibold text-slate-900 truncate">{usuario.nome}</p>
+            <p className="text-xs text-slate-500 truncate">{usuario.email}</p>
+            {usuario.plano === 'premium' ? (
+              <span className="inline-flex items-center gap-1 mt-2 px-2 py-0.5 bg-amber-100 text-amber-700 text-xs font-semibold rounded-full">
+                <Crown className="w-3 h-3" /> Premium
+              </span>
+            ) : (
+              <span className="inline-block mt-2 px-2 py-0.5 bg-slate-100 text-slate-600 text-xs font-medium rounded-full">
+                Plano Gratuito
+              </span>
+            )}
+          </div>
+          <button
+            onClick={() => { setAberto(false); onAbrirConfig(); }}
+            className="w-full px-4 py-2.5 text-left text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2"
+          >
+            <Settings className="w-4 h-4" /> Minha Conta
+          </button>
+          <button
+            onClick={() => { setAberto(false); onSair(); }}
+            className="w-full px-4 py-2.5 text-left text-sm text-rose-600 hover:bg-rose-50 flex items-center gap-2 border-t border-slate-100"
+          >
+            <LogOut className="w-4 h-4" /> Sair
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
 // =====================================================================
 // DASHBOARD
 // =====================================================================
