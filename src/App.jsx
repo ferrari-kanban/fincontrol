@@ -199,7 +199,7 @@ function parsearTextoExtrato(texto) {
           }
           
           transacoes.push({
-            id: id: crypto.randomUUID(),
+            id: crypto.randomUUID(),
             data: normalizarData(matchData[0]),
             descricao: descricao.slice(0, 100),
             valor: Math.abs(valor),
