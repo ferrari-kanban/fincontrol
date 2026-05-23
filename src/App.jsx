@@ -199,7 +199,7 @@ function parsearTextoExtrato(texto) {
           }
           
           transacoes.push({
-            id: `imp_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+            id: id: crypto.randomUUID(),
             data: normalizarData(matchData[0]),
             descricao: descricao.slice(0, 100),
             valor: Math.abs(valor),
@@ -875,7 +875,7 @@ function OrganizadorFinanceiro({ usuario, onSair, onAtualizarUsuario }) {
     if (t.id && dados.transacoes.find(tr => tr.id === t.id)) {
       novas = dados.transacoes.map(tr => tr.id === t.id ? t : tr);
     } else {
-      novas = [...dados.transacoes, { ...t, id: `t_${Date.now()}_${Math.random().toString(36).slice(2, 9)}` }];
+      novas = [...dados.transacoes, { ...t, id: crypto.randomUUID() }];
     }
     salvar({ transacoes: novas });
     setModalTransacao(false);
@@ -898,7 +898,7 @@ function OrganizadorFinanceiro({ usuario, onSair, onAtualizarUsuario }) {
     }
     const novas = c.id && dados.contas.find(co => co.id === c.id)
       ? dados.contas.map(co => co.id === c.id ? c : co)
-      : [...dados.contas, { ...c, id: `c_${Date.now()}_${Math.random().toString(36).slice(2, 9)}` }];
+      : [...dados.contas, { ...c, id: crypto.randomUUID() }];
     salvar({ contas: novas });
     setModalConta(false);
     setEditandoConta(null);
