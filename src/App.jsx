@@ -1084,6 +1084,17 @@ function OrganizadorFinanceiro({ usuario, onSair, onAtualizarUsuario }) {
       salvar({ transacoes: dados.transacoes.filter(t => t.id !== id) });
     }
   }
+  async function excluirVariasTransacoes(ids) {
+    const novasTransacoes = dados.transacoes.filter(t => !ids.includes(t.id));
+    salvar({ transacoes: novasTransacoes });
+    
+    // Deleta no Supabase (uma chamada batch)
+    try {
+      await supabase.from('transacoes').delete().in('id', ids).eq('user_id', usuario.id);
+    } catch (e) {
+      console.error('Erro ao excluir em massa:', e);
+    }
+  }
 
   function salvarConta(c) {
     if (!c.id || !dados.contas.find(co => co.id === c.id)) {
@@ -1338,6 +1349,7 @@ function OrganizadorFinanceiro({ usuario, onSair, onAtualizarUsuario }) {
           <ListaTransacoes
             transacoes={transacoesFiltradas}
             contas={dados.contas}
+            onExcluirVarias={excluirVariasTransacoes}
             busca={buscaTransacao}
             setBusca={setBuscaTransacao}
             filtroCategoria={filtroCategoria}
@@ -2147,8 +2159,9 @@ function EstadoVazio({ mensagem }) {
 // =====================================================================
 // LISTA TRANSAÇÕES
 // =====================================================================
-function ListaTransacoes({ transacoes, contas, busca, setBusca, filtroCategoria, setFiltroCategoria, onEditar, onExcluir }) {
+function ListaTransacoes({ transacoes, contas, busca, setBusca, filtroCategoria, setFiltroCategoria, onEditar, onExcluir, onExcluirVarias }) {
   const [ordenacao, setOrdenacao] = useState('data_desc');
+  const [selecionadas, setSelecionadas] = useState(new Set());
   
   const filtradas = useMemo(() => {
     let lista = transacoes
@@ -2181,8 +2194,56 @@ function ListaTransacoes({ transacoes, contas, busca, setBusca, filtroCategoria,
     
     return lista;
   }, [transacoes, busca, filtroCategoria, ordenacao]);
+  function toggleSelecao(id) {
+    const nova = new Set(selecionadas);
+    if (nova.has(id)) nova.delete(id);
+    else nova.add(id);
+    setSelecionadas(nova);
+  }
+
+  function selecionarTodas() {
+    if (selecionadas.size === filtradas.length) {
+      setSelecionadas(new Set());
+    } else {
+      setSelecionadas(new Set(filtradas.map(t => t.id)));
+    }
+  }
+
+  function excluirSelecionadas() {
+    const qtd = selecionadas.size;
+    if (qtd === 0) return;
+    if (confirm(`Excluir ${qtd} ${qtd === 1 ? 'transação' : 'transações'} selecionada${qtd === 1 ? '' : 's'}? Esta ação não pode ser desfeita.`)) {
+      onExcluirVarias(Array.from(selecionadas));
+      setSelecionadas(new Set());
+    }
+  }
+
+  const todasSelecionadas = filtradas.length > 0 && selecionadas.size === filtradas.length;
   return (
     <div className="space-y-4">
+      {/* Barra de ações em massa - aparece só quando tem seleção */}
+      {selecionadas.size > 0 && (
+        <div className="bg-indigo-50 border border-indigo-200 rounded-2xl p-3 flex items-center justify-between gap-3 flex-wrap">
+          <p className="text-sm font-medium text-indigo-900">
+            {selecionadas.size} {selecionadas.size === 1 ? 'transação selecionada' : 'transações selecionadas'}
+          </p>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setSelecionadas(new Set())}
+              className="px-3 py-1.5 text-sm text-slate-700 hover:bg-white rounded-lg font-medium"
+            >
+              Cancelar
+            </button>
+            <button
+              onClick={excluirSelecionadas}
+              className="px-3 py-1.5 text-sm bg-rose-600 text-white rounded-lg font-medium hover:bg-rose-700 flex items-center gap-1.5"
+            >
+              <Trash2 className="w-4 h-4" />
+              Excluir selecionadas
+            </button>
+          </div>
+        </div>
+      )}
       <div className="bg-white rounded-2xl border border-slate-200 p-4 flex flex-col sm:flex-row gap-3">
         <div className="flex-1 relative">
           <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -2206,9 +2267,28 @@ function ListaTransacoes({ transacoes, contas, busca, setBusca, filtroCategoria,
         {filtradas.length === 0 ? (
           <EstadoVazio mensagem="Nenhuma transação encontrada" />
         ) : (
-          <div className="divide-y divide-slate-100">
+          <>
+            {/* Checkbox selecionar todas */}
+            <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-100 flex items-center gap-3">
+              <input
+                type="checkbox"
+                checked={todasSelecionadas}
+                onChange={selecionarTodas}
+                className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+              />
+              <span className="text-xs font-medium text-slate-600">
+                {todasSelecionadas ? 'Desmarcar todas' : `Selecionar todas (${filtradas.length})`}
+              </span>
+            </div>
+            <div className="divide-y divide-slate-100">
             {filtradas.map(t => (
-              <div key={t.id} className="p-4 hover:bg-slate-50 flex items-center gap-3">
+              <div key={t.id} className={`p-4 hover:bg-slate-50 flex items-center gap-3 transition ${selecionadas.has(t.id) ? 'bg-indigo-50' : ''}`}>
+                <input
+                  type="checkbox"
+                  checked={selecionadas.has(t.id)}
+                  onChange={() => toggleSelecao(t.id)}
+                  className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer flex-shrink-0"
+                />
                 <div className="w-10 h-10 rounded-lg flex items-center justify-center text-base flex-shrink-0" style={{ backgroundColor: (CATEGORIAS[t.categoria]?.cor || '#94a3b8') + '20' }}>
                   {CATEGORIAS[t.categoria]?.icone || '📦'}
                 </div>
@@ -2228,10 +2308,11 @@ function ListaTransacoes({ transacoes, contas, busca, setBusca, filtroCategoria,
                 </div>
               </div>
             ))}
-          </div>
+            </div>
+          </>
         )}
       </div>
-    </div>
+      </div>
   );
 }
 
