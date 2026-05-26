@@ -1389,6 +1389,7 @@ function OrganizadorFinanceiro({ usuario, onSair, onAtualizarUsuario }) {
         <ModalImportacao
           onFechar={() => setModalImportacao(false)}
           regrasUsuario={dados.regras}
+          contas={dados.contas}
           onResultado={(trans) => {
             setTransacoesPendentes(trans);
             setModalImportacao(false);
@@ -2147,13 +2148,39 @@ function EstadoVazio({ mensagem }) {
 // LISTA TRANSAÇÕES
 // =====================================================================
 function ListaTransacoes({ transacoes, contas, busca, setBusca, filtroCategoria, setFiltroCategoria, onEditar, onExcluir }) {
-  const filtradas = useMemo(() => 
-    transacoes
+  const [ordenacao, setOrdenacao] = useState('data_desc');
+  
+  const filtradas = useMemo(() => {
+    let lista = transacoes
       .filter(t => filtroCategoria === 'todas' || t.categoria === filtroCategoria)
-      .filter(t => !busca || t.descricao.toLowerCase().includes(busca.toLowerCase()))
-      .sort((a, b) => b.data.localeCompare(a.data))
-  , [transacoes, busca, filtroCategoria]);
-
+      .filter(t => !busca || t.descricao.toLowerCase().includes(busca.toLowerCase()));
+    
+    // Aplica ordenação
+    switch (ordenacao) {
+      case 'data_desc':
+        lista.sort((a, b) => b.data.localeCompare(a.data));
+        break;
+      case 'data_asc':
+        lista.sort((a, b) => a.data.localeCompare(b.data));
+        break;
+      case 'valor_desc':
+        lista.sort((a, b) => b.valor - a.valor);
+        break;
+      case 'valor_asc':
+        lista.sort((a, b) => a.valor - b.valor);
+        break;
+      case 'categoria':
+        lista.sort((a, b) => a.categoria.localeCompare(b.categoria));
+        break;
+      case 'descricao':
+        lista.sort((a, b) => a.descricao.localeCompare(b.descricao));
+        break;
+      default:
+        lista.sort((a, b) => b.data.localeCompare(a.data));
+    }
+    
+    return lista;
+  }, [transacoes, busca, filtroCategoria, ordenacao]);
   return (
     <div className="space-y-4">
       <div className="bg-white rounded-2xl border border-slate-200 p-4 flex flex-col sm:flex-row gap-3">
@@ -2164,6 +2191,14 @@ function ListaTransacoes({ transacoes, contas, busca, setBusca, filtroCategoria,
         <select value={filtroCategoria} onChange={e => setFiltroCategoria(e.target.value)} className="px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white">
           <option value="todas">Todas as categorias</option>
           {Object.keys(CATEGORIAS).map(cat => <option key={cat} value={cat}>{CATEGORIAS[cat].icone} {cat}</option>)}
+        </select>
+        <select value={ordenacao} onChange={e => setOrdenacao(e.target.value)} className="px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white">
+          <option value="data_desc">📅 Data (mais recente)</option>
+          <option value="data_asc">📅 Data (mais antiga)</option>
+          <option value="valor_desc">💰 Valor (maior)</option>
+          <option value="valor_asc">💰 Valor (menor)</option>
+          <option value="categoria">🏷️ Categoria (A-Z)</option>
+          <option value="descricao">🔤 Descrição (A-Z)</option>
         </select>
       </div>
 
@@ -2419,13 +2454,14 @@ function ModalTransacao({ transacao, contas, regrasUsuario, onSalvar, onFechar }
   );
 }
 
-function ModalImportacao({ onFechar, onResultado, regrasUsuario }) {
+function ModalImportacao({ onFechar, onResultado, regrasUsuario, contas }) {
   const [arquivo, setArquivo] = useState(null);
   const [textoColar, setTextoColar] = useState('');
   const [modo, setModo] = useState('pdf');
   const [processando, setProcessando] = useState(false);
   const [erro, setErro] = useState('');
   const inputRef = useRef();
+  const [contaDestino, setContaDestino] = useState(contas[0]?.id || '');
 
   async function processarPDF(file) {
     setProcessando(true); setErro('');
@@ -2456,8 +2492,11 @@ function ModalImportacao({ onFechar, onResultado, regrasUsuario }) {
         });
       }
       const transacoes = parsearTextoExtrato(textoCompleto);
-      // Reaplica categorização com regras do usuário
-      transacoes.forEach(t => { t.categoria = categorizar(t.descricao, regrasUsuario); });
+      // Reaplica categorização e aplica conta destino
+      transacoes.forEach(t => { 
+        t.categoria = categorizar(t.descricao, regrasUsuario);
+        t.conta = contaDestino;
+      });
       
       if (transacoes.length === 0) {
         setErro('Não identifiquei transações neste PDF. Tente colar o texto manualmente.');
@@ -2475,7 +2514,10 @@ function ModalImportacao({ onFechar, onResultado, regrasUsuario }) {
   function processarTexto() {
     if (!textoColar.trim()) { setErro('Cole o texto primeiro'); return; }
     const transacoes = parsearTextoExtrato(textoColar);
-    transacoes.forEach(t => { t.categoria = categorizar(t.descricao, regrasUsuario); });
+    transacoes.forEach(t => { 
+      t.categoria = categorizar(t.descricao, regrasUsuario);
+      t.conta = contaDestino;
+    });
     if (transacoes.length === 0) { setErro('Não consegui identificar transações.'); return; }
     onResultado(transacoes);
   }
@@ -2483,6 +2525,25 @@ function ModalImportacao({ onFechar, onResultado, regrasUsuario }) {
   return (
     <ModalBase titulo="Importar Extrato ou Fatura" onFechar={onFechar}>
       <div className="space-y-4">
+        <div>
+          <label className="block text-sm font-medium text-slate-700 mb-1.5">
+            Importar para:
+          </label>
+          <select 
+            value={contaDestino} 
+            onChange={e => setContaDestino(e.target.value)} 
+            className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white"
+          >
+            {contas.map(c => (
+              <option key={c.id} value={c.id}>
+                {c.tipo === 'cartao' ? '💳' : '🏦'} {c.nome}
+              </option>
+            ))}
+          </select>
+          <p className="text-xs text-slate-500 mt-1">
+            Todas as transações importadas serão vinculadas a esta conta
+          </p>
+        </div>
         <div className="flex gap-2">
           <button onClick={() => setModo('pdf')} className={`flex-1 py-2 rounded-lg font-medium text-sm transition ${modo === 'pdf' ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-600'}`}>📄 Arquivo PDF</button>
           <button onClick={() => setModo('texto')} className={`flex-1 py-2 rounded-lg font-medium text-sm transition ${modo === 'texto' ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-600'}`}>📋 Colar Texto</button>
