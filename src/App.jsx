@@ -134,29 +134,237 @@ function categorizar(descricao, regrasUsuario = {}) {
 // =====================================================================
 
 // Detecta qual banco baseado em assinatura no texto
+// =====================================================================
+// DETECÇÃO DE BANCO
+// =====================================================================
 function detectarBanco(texto) {
   const t = texto.toLowerCase();
+  
+  // Bancos com parsers específicos
+  if (t.includes('banco xp') || t.includes('conta digital xp') || t.includes('xpi.com.br')) return 'xp';
+  if (t.includes('sicredi') || t.includes('cooperativa')) return 'sicredi';
+  if (t.includes('bradesco celular') || (t.includes('bradesco') && t.includes('extrato de:'))) return 'bradesco_extrato';
+  
+  // Outros bancos (fallback usa parser genérico)
   if (t.includes('nu pagamentos') || t.includes('nubank')) return 'nubank';
   if (t.includes('itaú') || t.includes('itau unibanco')) return 'itau';
   if (t.includes('bradesco')) return 'bradesco';
   if (t.includes('banco do brasil')) return 'bb';
   if (t.includes('caixa econômica') || t.includes('caixa economica')) return 'caixa';
   if (t.includes('santander')) return 'santander';
-  if (t.includes('inter ') || t.includes('banco inter')) return 'inter';
+  if (t.includes('banco inter')) return 'inter';
+  
   return 'generico';
 }
 
-// Parser genérico aprimorado
+// =====================================================================
+// PARSER PRINCIPAL - roteia para parser específico do banco
+// =====================================================================
 function parsearTextoExtrato(texto) {
   const banco = detectarBanco(texto);
+  
+  // Parsers específicos validados
+  if (banco === 'xp') return parsearXP(texto);
+  if (banco === 'sicredi') return parsearSicredi(texto);
+  if (banco === 'bradesco_extrato') return parsearBradesco(texto);
+  
+  // Fallback genérico (para bancos não validados)
+  return parsearGenerico(texto, banco);
+}
+
+// =====================================================================
+// PARSER ESPECÍFICO: XP (Banco XP S.A)
+// Formato: DATA hh:mm:ss | DESCRIÇÃO | VALOR (com sinal) | SALDO
+// =====================================================================
+function parsearXP(texto) {
+  const transacoes = [];
+  // Regex que captura: data com hora + descrição + valor + saldo
+  // Ex: "26/05/26 às 05:24:55 Rendimento automático R$ 0,07 R$ 7.487,40"
+  const regexLinha = /(\d{2}\/\d{2}\/\d{2,4})\s+às\s+\d{2}:\d{2}:\d{2}\s+(.+?)\s+(-?R\$\s?[\d.]+,\d{2})\s+R\$\s?[\d.]+,\d{2}/g;
+  
+  let match;
+  while ((match = regexLinha.exec(texto)) !== null) {
+    const [, dataStr, descricao, valorStr] = match;
+    
+    const ehNegativo = valorStr.includes('-');
+    const valorLimpo = valorStr.replace(/[R$\s\-]/g, '').replace(/\./g, '').replace(',', '.');
+    const valor = parseFloat(valorLimpo);
+    
+    if (!isNaN(valor) && valor > 0) {
+      transacoes.push({
+        id: crypto.randomUUID(),
+        data: normalizarData(dataStr),
+        descricao: descricao.trim().slice(0, 100),
+        valor: valor,
+        tipo: ehNegativo ? 'saida' : 'entrada',
+        categoria: categorizar(descricao),
+        conta: 'importado',
+        banco_origem: 'xp',
+        importado: true
+      });
+    }
+  }
+  
+  return transacoes;
+}
+
+// =====================================================================
+// PARSER ESPECÍFICO: SICREDI
+// Formato: DATA | DESCRIÇÃO | DOCUMENTO | VALOR(com sinal) | SALDO
+// =====================================================================
+function parsearSicredi(texto) {
+  const transacoes = [];
+  const linhas = texto.split('\n').map(l => l.trim()).filter(l => l.length > 10);
+  
+  for (const linha of linhas) {
+    // Ignora linha de saldo anterior, cabeçalhos, etc.
+    if (/saldo anterior|saldo atual|cooperativa|associado|extrato/i.test(linha)) continue;
+    
+    // Regex Sicredi: data + descrição + (documento opcional) + valor + saldo
+    // O VALOR é o penúltimo número monetário e o SALDO é o último
+    const matchData = linha.match(/^(\d{2}\/\d{2}\/\d{4})/);
+    if (!matchData) continue;
+    
+    // Captura TODOS os números monetários da linha (com vírgula decimal)
+    const valoresEncontrados = [...linha.matchAll(/(-?[\d.]+,\d{2})/g)];
+    if (valoresEncontrados.length < 2) continue;
+    
+    // Penúltimo = valor da transação, último = saldo
+    const valorTransacaoStr = valoresEncontrados[valoresEncontrados.length - 2][0];
+    
+    const ehNegativo = valorTransacaoStr.startsWith('-');
+    const valorLimpo = valorTransacaoStr.replace(/-/g, '').replace(/\./g, '').replace(',', '.');
+    const valor = parseFloat(valorLimpo);
+    
+    if (isNaN(valor) || valor === 0) continue;
+    
+    // Extrai descrição: tudo entre a data e o primeiro valor monetário
+    const inicioValor = linha.indexOf(valorTransacaoStr);
+    let descricao = linha.slice(matchData[0].length, inicioValor).trim();
+    
+    // Remove o tipo de documento do final (PIX_DEB, PIX_CRED, CX910810, MAPFREV, etc.)
+    descricao = descricao.replace(/\s+(PIX_DEB|PIX_CRED|CX\d+|CONSORCIO|SEM PARAR|MAPFREV)\s*$/i, '').trim();
+    
+    // Remove CPFs/CNPJs do meio (números longos isolados)
+    descricao = descricao.replace(/\b\d{11,14}\b/g, '').replace(/\s+/g, ' ').trim();
+    
+    if (descricao.length < 3) continue;
+    
+    transacoes.push({
+      id: crypto.randomUUID(),
+      data: normalizarData(matchData[0]),
+      descricao: descricao.slice(0, 100),
+      valor: valor,
+      tipo: ehNegativo ? 'saida' : 'entrada',
+      categoria: categorizar(descricao),
+      conta: 'importado',
+      banco_origem: 'sicredi',
+      importado: true
+    });
+  }
+  
+  return transacoes;
+}
+
+// =====================================================================
+// PARSER ESPECÍFICO: BRADESCO (Bradesco Celular)
+// Formato: DATA | HISTÓRICO | DOCTO | CRÉDITO | DÉBITO | SALDO
+// IMPORTANTE: as colunas Crédito e Débito são SEPARADAS no PDF do Bradesco
+// =====================================================================
+function parsearBradesco(texto) {
   const transacoes = [];
   const linhas = texto.split('\n').map(l => l.trim()).filter(l => l.length > 5);
   
-  // Regex para datas brasileiras (DD/MM ou DD/MM/YYYY)
+  let ultimaData = null;
+  
+  for (let i = 0; i < linhas.length; i++) {
+    const linha = linhas[i];
+    
+    // Ignora cabeçalhos e linhas de totais
+    if (/^(data|histórico|extrato|nome|agência|conta|folha|total|cod\. lanc|extrato inexistente|bradesco)/i.test(linha)) continue;
+    
+    // Detecta data no início da linha (DD/MM/AAAA)
+    const matchData = linha.match(/^(\d{2}\/\d{2}\/\d{4})/);
+    if (matchData) {
+      ultimaData = normalizarData(matchData[0]);
+    }
+    
+    // Procura valores monetários na linha
+    const valores = [...linha.matchAll(/(-?[\d.]+,\d{2})/g)];
+    if (valores.length === 0 || !ultimaData) continue;
+    
+    // No Bradesco: última coluna é SALDO, penúltima é VALOR (débito ou crédito)
+    // Se tem só 1 valor: pode ser só saldo (linha sem movimento) ou só valor
+    // Se tem 2+ valores: penúltimo = valor da transação, último = saldo
+    let valorStr, saldoStr;
+    if (valores.length >= 2) {
+      valorStr = valores[valores.length - 2][0];
+      saldoStr = valores[valores.length - 1][0];
+    } else {
+      continue; // linha sem valor de transação
+    }
+    
+    const valorLimpo = valorStr.replace(/\./g, '').replace(',', '.');
+    const valor = parseFloat(valorLimpo);
+    if (isNaN(valor) || valor === 0) continue;
+    
+    // Para determinar entrada/saída no Bradesco, analisamos o histórico
+    const linhaLower = linha.toLowerCase();
+    const indicadoresEntrada = ['transferencia pix', 'pix recebido', 'recebimento', 'credito em conta', 'rendimento', 'estorno', 'deposito'];
+    const indicadoresSaida = ['parcela credito', 'prestacao', 'pix qr code', 'debito automatico', 'iof', 'encargos', 'gastos cartao', 'emprestimo pessoal', 'tarifa', 'cesta', 'liquidacao boleto', 'pagamento'];
+    
+    let tipo = null;
+    // PIX no Bradesco é ambíguo - "TRANSFERENCIA PIX REM" significa que o REMETENTE foi o usuário (saída)
+    // Vamos olhar contexto: se diz "EMPRESTIMO PESSOAL" e tem valor entrando, é entrada
+    if (linhaLower.includes('emprestimo pessoal')) {
+      tipo = 'entrada'; // empréstimo é dinheiro entrando
+    } else if (linhaLower.includes('transferencia pix') && linhaLower.includes('rem:')) {
+      // "REM:" indica remetente - se o nome do remetente é o próprio usuário, é entre contas dele (transferência)
+      tipo = 'entrada'; // está vindo pra esta conta
+    } else if (indicadoresSaida.some(p => linhaLower.includes(p))) {
+      tipo = 'saida';
+    } else if (indicadoresEntrada.some(p => linhaLower.includes(p))) {
+      tipo = 'entrada';
+    } else {
+      tipo = 'saida'; // default: assume saída se incerto
+    }
+    
+    // Extrai descrição: parte textual da linha (sem data, sem números monetários, sem documento)
+    let descricao = linha;
+    if (matchData) descricao = descricao.replace(matchData[0], '');
+    descricao = descricao.replace(valorStr, '').replace(saldoStr, '');
+    descricao = descricao.replace(/\b\d{7,}\b/g, ''); // remove documentos longos
+    descricao = descricao.replace(/REM:\s*/i, '').replace(/CONTR\s+\d+\s+PARC\s+[\d/]+/i, '');
+    descricao = descricao.replace(/ENCARGO\s+-\s+[\d,]+%/i, 'ENCARGOS');
+    descricao = descricao.replace(/\s+/g, ' ').trim();
+    
+    if (descricao.length < 3) continue;
+    
+    transacoes.push({
+      id: crypto.randomUUID(),
+      data: ultimaData,
+      descricao: descricao.slice(0, 100),
+      valor: valor,
+      tipo: tipo,
+      categoria: categorizar(descricao),
+      conta: 'importado',
+      banco_origem: 'bradesco',
+      importado: true
+    });
+  }
+  
+  return transacoes;
+}
+
+// =====================================================================
+// PARSER GENÉRICO (para bancos não validados oficialmente)
+// =====================================================================
+function parsearGenerico(texto, banco) {
+  const transacoes = [];
+  const linhas = texto.split('\n').map(l => l.trim()).filter(l => l.length > 5);
+  
   const regexData = /(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)/;
-  // Regex para valores com suporte a sinal negativo
   const regexValor = /(-?\s?R?\$?\s?-?\s?[\d.]+,\d{2})/g;
-  // Regex para identificar palavras-chave de débito/crédito
   const palavrasDebito = ['debito', 'débito', 'pagamento', 'compra', 'saque', 'tarifa', 'pix enviado'];
   const palavrasCredito = ['credito em conta', 'crédito em conta', 'recebido', 'salario', 'salário', 'estorno', 'rendimento', 'tef recebido'];
   
@@ -165,38 +373,27 @@ function parsearTextoExtrato(texto) {
     const matchesValor = [...linha.matchAll(regexValor)];
     
     if (matchData && matchesValor.length > 0) {
-      const valorStr = matchesValor[matchesValor.length - 1][0];
+      // Se há 2+ valores, o penúltimo geralmente é o valor da transação (último é saldo)
+      const valorStr = matchesValor.length >= 2 
+        ? matchesValor[matchesValor.length - 2][0]
+        : matchesValor[matchesValor.length - 1][0];
+      
       const ehNegativoNoTexto = valorStr.includes('-');
       const valorLimpo = valorStr.replace(/R\$|\s|-/g, '').replace(/\./g, '').replace(',', '.');
       const valor = parseFloat(valorLimpo);
       
       if (!isNaN(valor) && Math.abs(valor) > 0.009) {
-        let descricao = linha
-          .replace(matchData[0], '')
-          .replace(valorStr, '')
-          .replace(/\s+/g, ' ')
-          .trim();
-        
-        // Remove códigos longos
-        descricao = descricao.replace(/\b\d{10,}\b/g, '').trim();
-        // Remove asterisco comum em faturas
-        descricao = descricao.replace(/\*+/g, ' ').replace(/\s+/g, ' ').trim();
+        let descricao = linha.replace(matchData[0], '');
+        matchesValor.forEach(m => { descricao = descricao.replace(m[0], ''); });
+        descricao = descricao.replace(/\b\d{10,}\b/g, '').replace(/\*+/g, ' ').replace(/\s+/g, ' ').trim();
         
         if (descricao.length > 2) {
-          const descLower = descricao.toLowerCase();
           const linhaLower = linha.toLowerCase();
-          
           let tipo;
-          if (ehNegativoNoTexto) {
-            tipo = 'saida';
-          } else if (palavrasCredito.some(p => linhaLower.includes(p) || descLower.includes(p))) {
-            tipo = 'entrada';
-          } else if (palavrasDebito.some(p => linhaLower.includes(p))) {
-            tipo = 'saida';
-          } else {
-            // Para faturas de cartão, tudo é saída por padrão
-            tipo = banco === 'nubank' || linhaLower.includes('fatura') ? 'saida' : 'saida';
-          }
+          if (ehNegativoNoTexto) tipo = 'saida';
+          else if (palavrasCredito.some(p => linhaLower.includes(p))) tipo = 'entrada';
+          else if (palavrasDebito.some(p => linhaLower.includes(p))) tipo = 'saida';
+          else tipo = 'saida';
           
           transacoes.push({
             id: crypto.randomUUID(),
