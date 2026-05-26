@@ -2583,7 +2583,8 @@ function ModalImportacao({ onFechar, onResultado, regrasUsuario, contas }) {
 function ModalRevisao({ transacoes, setTransacoes, contas, onConfirmar, onCancelar, onAprenderRegra }) {
   function atualizar(id, campo, valor) {
     const t = transacoes.find(x => x.id === id);
-    // Sistema de aprendizado: se mudou categoria, salva regra para próximas vezes
+    // Sistema de aprendizado: usa a descrição ATUAL (que pode ter sido editada)
+    // para criar regra de categorização
     if (campo === 'categoria' && t && t.descricao) {
       const palavraChave = t.descricao.toLowerCase().split(' ').slice(0, 3).join(' ');
       if (palavraChave.length > 3) onAprenderRegra(palavraChave, valor);
@@ -2602,9 +2603,15 @@ function ModalRevisao({ transacoes, setTransacoes, contas, onConfirmar, onCancel
           {transacoes.map(t => (
             <div key={t.id} className="border border-slate-200 rounded-lg p-3">
               <div className="flex items-center justify-between mb-2">
-                <div className="flex-1 min-w-0">
-                  <p className="font-medium text-sm text-slate-900 truncate">{t.descricao}</p>
-                  <p className="text-xs text-slate-500">{formatarData(t.data)}</p>
+                <div className="flex-1 min-w-0 mr-2">
+                  <input
+                    type="text"
+                    value={t.descricao}
+                    onChange={e => atualizar(t.id, 'descricao', e.target.value)}
+                    className="w-full font-medium text-sm text-slate-900 bg-transparent border border-transparent hover:border-slate-200 focus:border-indigo-400 focus:bg-white rounded px-2 py-1 outline-none focus:ring-2 focus:ring-indigo-100"
+                    title="Clique para editar a descrição"
+                  />
+                  <p className="text-xs text-slate-500 px-2">{formatarData(t.data)}</p>
                 </div>
                 <div className="flex items-center gap-2">
                   <span className={`font-semibold text-sm ${t.tipo === 'entrada' ? 'text-emerald-600' : 'text-rose-600'}`}>{t.tipo === 'entrada' ? '+' : '-'}{formatarMoeda(t.valor)}</span>
