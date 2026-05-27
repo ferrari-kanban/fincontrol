@@ -414,6 +414,96 @@ function parsearGenerico(texto, banco) {
   return transacoes;
 }
 
+// =====================================================================
+// CÁLCULO DE COMPETÊNCIA
+// Dada uma data de compra e o dia de fechamento do cartão,
+// retorna o mês de competência (YYYY-MM) - quando a compra entra na fatura
+// =====================================================================
+function calcularCompetencia(dataCompra, diaFechamento) {
+  if (!diaFechamento) return dataCompra.slice(0, 7); // sem fechamento configurado, usa o próprio mês
+  
+  const [ano, mes, dia] = dataCompra.split('-').map(Number);
+  const diaCompra = dia;
+  
+  // Se a compra foi feita APÓS o fechamento, vai pra fatura do próximo mês
+  // Se foi feita ATÉ o fechamento, vai pra fatura do mês atual
+  let mesCompetencia = mes;
+  let anoCompetencia = ano;
+  
+  if (diaCompra > diaFechamento) {
+    // Após o fechamento → próxima fatura
+    mesCompetencia = mes + 1;
+    if (mesCompetencia > 12) {
+      mesCompetencia = 1;
+      anoCompetencia = ano + 1;
+    }
+  }
+  // Se diaCompra <= diaFechamento, compra entra na fatura atual (que vence no mês seguinte)
+  // Mas a "competência" pra controle é o mês em que a fatura SERÁ PAGA
+  mesCompetencia = mesCompetencia + 1; // a fatura sempre é paga no mês seguinte ao fechamento
+  if (mesCompetencia > 12) {
+    mesCompetencia = 1;
+    anoCompetencia = anoCompetencia + 1;
+  }
+  
+  return `${anoCompetencia}-${String(mesCompetencia).padStart(2, '0')}`;
+}
+// =====================================================================
+// DETECTOR DE DATAS DE FATURA
+// Lê o texto de uma fatura de cartão e tenta identificar
+// o dia de fechamento e dia de vencimento
+// =====================================================================
+function detectarDatasFatura(texto) {
+  const t = texto.toLowerCase();
+  let diaVencimento = null;
+  let diaFechamento = null;
+  
+  // Tenta detectar VENCIMENTO (padrões mais comuns)
+  // Procura "vencimento" seguido de uma data DD/MM ou DD/MM/AAAA
+  const padroesVencimento = [
+    /vencimento[\s\S]{0,30}?(\d{1,2})\/(\d{1,2})(?:\/\d{2,4})?/i,
+    /vence(?:r)?\s*em[\s\S]{0,30}?(\d{1,2})\/(\d{1,2})(?:\/\d{2,4})?/i,
+    /data\s+de\s+vencimento[\s\S]{0,30}?(\d{1,2})\/(\d{1,2})(?:\/\d{2,4})?/i,
+    /pagamento[\s\S]{0,30}?(\d{1,2})\/(\d{1,2})(?:\/\d{2,4})?/i,
+  ];
+  
+  for (const padrao of padroesVencimento) {
+    const match = texto.match(padrao);
+    if (match) {
+      const dia = parseInt(match[1]);
+      if (dia >= 1 && dia <= 31) {
+        diaVencimento = dia;
+        break;
+      }
+    }
+  }
+  
+  // Tenta detectar FECHAMENTO
+  const padroesFechamento = [
+    /fechamento[\s\S]{0,30}?(\d{1,2})\/(\d{1,2})(?:\/\d{2,4})?/i,
+    /fecha(?:mento)?\s+em[\s\S]{0,30}?(\d{1,2})\/(\d{1,2})(?:\/\d{2,4})?/i,
+    /data\s+de\s+fechamento[\s\S]{0,30}?(\d{1,2})\/(\d{1,2})(?:\/\d{2,4})?/i,
+  ];
+  
+  for (const padrao of padroesFechamento) {
+    const match = texto.match(padrao);
+    if (match) {
+      const dia = parseInt(match[1]);
+      if (dia >= 1 && dia <= 31) {
+        diaFechamento = dia;
+        break;
+      }
+    }
+  }
+  
+  // Se achou vencimento mas não fechamento, deduz (10 dias antes - padrão mais comum)
+  if (diaVencimento && !diaFechamento) {
+    diaFechamento = diaVencimento - 10;
+    if (diaFechamento < 1) diaFechamento += 30; // ajuste se virar negativo
+  }
+  
+  return { diaFechamento, diaVencimento };
+}
 function normalizarData(dataStr) {
   const partes = dataStr.split('/');
   const dia = partes[0].padStart(2, '0');
@@ -463,7 +553,8 @@ const dataLayer = {
       valor: parseFloat(t.valor),
       tipo: t.tipo,
       categoria: t.categoria,
-      conta: t.conta_id
+      conta: t.conta_id,
+      competencia: t.competencia || t.data.slice(0, 7)
     }));
     
     const contasAdaptadas = contas.map(c => ({
@@ -472,7 +563,9 @@ const dataLayer = {
       tipo: c.tipo,
       saldoInicial: parseFloat(c.saldo_inicial || 0),
       limite: parseFloat(c.limite || 0),
-      cor: c.cor
+      cor: c.cor,
+      dia_fechamento: c.dia_fechamento,
+      dia_vencimento: c.dia_vencimento
     }));
     
     const metas = {};
@@ -501,7 +594,8 @@ const dataLayer = {
             valor: t.valor,
             tipo: t.tipo,
             categoria: t.categoria,
-            conta_id: t.conta && t.conta !== 'importado' ? t.conta : null
+            conta_id: t.conta && t.conta !== 'importado' ? t.conta : null,
+            competencia: t.competencia || t.data.slice(0, 7)
           }));
           await supabase.from('transacoes').insert(paraInserir);
         }
@@ -515,7 +609,9 @@ const dataLayer = {
             tipo: c.tipo,
             saldo_inicial: c.saldoInicial || 0,
             limite: c.limite || 0,
-            cor: c.cor
+            cor: c.cor,
+            dia_fechamento: c.dia_fechamento || null,
+            dia_vencimento: c.dia_vencimento || null
           }));
           await supabase.from('contas').insert(paraInserir);
         }
@@ -1011,7 +1107,11 @@ function OrganizadorFinanceiro({ usuario, onSair, onAtualizarUsuario }) {
 
   // Cálculos
   const transacoesFiltradas = useMemo(() => 
-    dados.transacoes.filter(t => t.data && t.data.startsWith(filtroMes))
+    dados.transacoes.filter(t => {
+      // Usa competência se existir (caso típico de cartão), senão usa a data
+      const mesReferencia = t.competencia || (t.data ? t.data.slice(0, 7) : '');
+      return mesReferencia === filtroMes;
+    })
   , [dados.transacoes, filtroMes]);
 
   const totais = useMemo(() => {
@@ -1068,11 +1168,21 @@ function OrganizadorFinanceiro({ usuario, onSair, onAtualizarUsuario }) {
       }
     }
     
+    // Calcula competência baseada na conta selecionada
+    const contaSelecionada = dados.contas.find(c => c.id === t.conta);
+    let competencia;
+    if (contaSelecionada?.tipo === 'cartao' && contaSelecionada.dia_fechamento) {
+      competencia = calcularCompetencia(t.data, contaSelecionada.dia_fechamento);
+    } else {
+      competencia = t.data.slice(0, 7);
+    }
+    const transacaoComCompetencia = { ...t, competencia };
+    
     let novas;
     if (t.id && dados.transacoes.find(tr => tr.id === t.id)) {
-      novas = dados.transacoes.map(tr => tr.id === t.id ? t : tr);
+      novas = dados.transacoes.map(tr => tr.id === t.id ? transacaoComCompetencia : tr);
     } else {
-      novas = [...dados.transacoes, { ...t, id: crypto.randomUUID() }];
+      novas = [...dados.transacoes, { ...transacaoComCompetencia, id: crypto.randomUUID() }];
     }
     salvar({ transacoes: novas });
     setModalTransacao(false);
@@ -1110,6 +1220,19 @@ function OrganizadorFinanceiro({ usuario, onSair, onAtualizarUsuario }) {
     salvar({ contas: novas });
     setModalConta(false);
     setEditandoConta(null);
+  }
+  // Atualiza apenas as datas de fechamento/vencimento de um cartão
+  // Usado quando detectamos automaticamente na importação de fatura
+  function atualizarContaDatas(contaId, datas) {
+    const novas = dados.contas.map(c => {
+      if (c.id !== contaId) return c;
+      return {
+        ...c,
+        dia_fechamento: datas.diaFechamento || c.dia_fechamento,
+        dia_vencimento: datas.diaVencimento || c.dia_vencimento
+      };
+    });
+    salvar({ contas: novas });
   }
 
   function excluirConta(id) {
@@ -1402,6 +1525,7 @@ function OrganizadorFinanceiro({ usuario, onSair, onAtualizarUsuario }) {
           onFechar={() => setModalImportacao(false)}
           regrasUsuario={dados.regras}
           contas={dados.contas}
+          onAtualizarContaDatas={atualizarContaDatas}
           onResultado={(trans) => {
             setTransacoesPendentes(trans);
             setModalImportacao(false);
@@ -2535,7 +2659,7 @@ function ModalTransacao({ transacao, contas, regrasUsuario, onSalvar, onFechar }
   );
 }
 
-function ModalImportacao({ onFechar, onResultado, regrasUsuario, contas }) {
+function ModalImportacao({ onFechar, onResultado, regrasUsuario, contas, onAtualizarContaDatas }) {
   const [arquivo, setArquivo] = useState(null);
   const [textoColar, setTextoColar] = useState('');
   const [modo, setModo] = useState('pdf');
@@ -2573,10 +2697,36 @@ function ModalImportacao({ onFechar, onResultado, regrasUsuario, contas }) {
         });
       }
       const transacoes = parsearTextoExtrato(textoCompleto);
-      // Reaplica categorização e aplica conta destino
+      
+      // Verifica se a conta destino é um cartão e tenta detectar datas da fatura
+      const contaSelecionada = contas.find(c => c.id === contaDestino);
+      let datasFatura = { diaFechamento: null, diaVencimento: null };
+      
+      if (contaSelecionada?.tipo === 'cartao') {
+        datasFatura = detectarDatasFatura(textoCompleto);
+        
+        // Se detectou datas E o cartão ainda não tem, atualiza automaticamente
+        if (datasFatura.diaFechamento && !contaSelecionada.dia_fechamento) {
+          onAtualizarContaDatas(contaDestino, datasFatura);
+        }
+      }
+      
+      // Define dia de fechamento a usar pra calcular competência
+      // Prioridade: dados detectados na fatura > dados já cadastrados no cartão
+      const fechamentoAtivo = datasFatura.diaFechamento || contaSelecionada?.dia_fechamento;
+      
+      // Reaplica categorização, conta destino, e calcula competência
       transacoes.forEach(t => { 
         t.categoria = categorizar(t.descricao, regrasUsuario);
         t.conta = contaDestino;
+        
+        // Pra cartão de crédito: calcula competência baseada na data da compra
+        if (contaSelecionada?.tipo === 'cartao' && fechamentoAtivo) {
+          t.competencia = calcularCompetencia(t.data, fechamentoAtivo);
+        } else {
+          // Pra conta corrente: competência = mês da própria data
+          t.competencia = t.data.slice(0, 7);
+        }
       });
       
       if (transacoes.length === 0) {
@@ -2595,9 +2745,29 @@ function ModalImportacao({ onFechar, onResultado, regrasUsuario, contas }) {
   function processarTexto() {
     if (!textoColar.trim()) { setErro('Cole o texto primeiro'); return; }
     const transacoes = parsearTextoExtrato(textoColar);
+    
+    // Verifica se a conta destino é um cartão e detecta datas
+    const contaSelecionada = contas.find(c => c.id === contaDestino);
+    let datasFatura = { diaFechamento: null, diaVencimento: null };
+    
+    if (contaSelecionada?.tipo === 'cartao') {
+      datasFatura = detectarDatasFatura(textoColar);
+      if (datasFatura.diaFechamento && !contaSelecionada.dia_fechamento) {
+        onAtualizarContaDatas(contaDestino, datasFatura);
+      }
+    }
+    
+    const fechamentoAtivo = datasFatura.diaFechamento || contaSelecionada?.dia_fechamento;
+    
     transacoes.forEach(t => { 
       t.categoria = categorizar(t.descricao, regrasUsuario);
       t.conta = contaDestino;
+      
+      if (contaSelecionada?.tipo === 'cartao' && fechamentoAtivo) {
+        t.competencia = calcularCompetencia(t.data, fechamentoAtivo);
+      } else {
+        t.competencia = t.data.slice(0, 7);
+      }
     });
     if (transacoes.length === 0) { setErro('Não consegui identificar transações.'); return; }
     onResultado(transacoes);
@@ -2725,7 +2895,15 @@ function ModalRevisao({ transacoes, setTransacoes, contas, onConfirmar, onCancel
 }
 
 function ModalConta({ conta, onSalvar, onFechar }) {
-  const [form, setForm] = useState(conta || { nome: '', tipo: 'conta', saldoInicial: 0, limite: 0, cor: '#3b82f6' });
+  const [form, setForm] = useState(conta || { 
+    nome: '', 
+    tipo: 'conta', 
+    saldoInicial: 0, 
+    limite: 0, 
+    cor: '#3b82f6',
+    dia_fechamento: 25,
+    dia_vencimento: 5
+  });
   return (
     <ModalBase titulo={conta ? 'Editar Conta' : 'Nova Conta'} onFechar={onFechar}>
       <div className="space-y-4">
@@ -2746,10 +2924,56 @@ function ModalConta({ conta, onSalvar, onFechar }) {
             <input type="number" step="0.01" value={form.saldoInicial} onChange={e => setForm({ ...form, saldoInicial: parseFloat(e.target.value) || 0 })} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm" />
           </div>
         ) : (
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Limite</label>
-            <input type="number" step="0.01" value={form.limite} onChange={e => setForm({ ...form, limite: parseFloat(e.target.value) || 0 })} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm" />
-          </div>
+          <>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Limite</label>
+              <input 
+                type="number" 
+                step="0.01" 
+                value={form.limite} 
+                onChange={e => setForm({ ...form, limite: parseFloat(e.target.value) || 0 })} 
+                className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm" 
+              />
+            </div>
+            
+            <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-3">
+              <p className="text-xs font-semibold text-indigo-900 mb-2 flex items-center gap-1.5">
+                <Calendar className="w-3.5 h-3.5" />
+                Ciclo de fatura
+              </p>
+              <p className="text-xs text-indigo-700 mb-3">
+                Configure as datas do seu cartão. Você consegue ver essas datas no app do banco ou na fatura mais recente.
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">Dia de fechamento</label>
+                  <input 
+                    type="number" 
+                    min="1" 
+                    max="31"
+                    value={form.dia_fechamento || ''} 
+                    onChange={e => setForm({ ...form, dia_fechamento: parseInt(e.target.value) || null })} 
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white" 
+                    placeholder="25"
+                  />
+                  <p className="text-[10px] text-slate-500 mt-1">Dia em que a fatura fecha</p>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">Dia de vencimento</label>
+                  <input 
+                    type="number" 
+                    min="1" 
+                    max="31"
+                    value={form.dia_vencimento || ''} 
+                    onChange={e => setForm({ ...form, dia_vencimento: parseInt(e.target.value) || null })} 
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white" 
+                    placeholder="5"
+                  />
+                  <p className="text-[10px] text-slate-500 mt-1">Dia em que você paga</p>
+                </div>
+              </div>
+            </div>
+          </>
         )}
         <div>
           <label className="block text-sm font-medium text-slate-700 mb-1">Cor</label>
